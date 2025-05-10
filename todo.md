@@ -1,0 +1,5 @@
+- check start and finish time of each vacancy and whole process
+- fix cookies usage - scrypt save but do not use cookies for some reason
+- save all text of the page to try to understand it with llm if it cant be parsed
+- make screenshot of every vacancy scrypt visit (to use it in case when parse and llm html understandings failed. try to recognize screenshot with llm)
+- discuss with LLM: make it usable from google spreadsheets / chrome extention
