@@ -33,6 +33,7 @@ test-results/
 coverage/
 *.db
 *.sqlite
+debug/
 
 # Environment variables
 .env
