@@ -9,6 +9,8 @@ A Python script that scrapes job titles, locations, and descriptions from Linked
 - Handles LinkedIn authentication and attempts to reuse sessions using `linkedin_auth.json`
 - Exports results to CSV format
 - Debug mode to save HTML content and screenshots for troubleshooting
+- Graceful handling of browser closure by user
+- Improved session authentication and validation
 
 ## Prerequisites
 
@@ -51,6 +53,16 @@ python one.py links.txt output.csv
 python one.py links.txt output.csv --debug
 ```
 
+4. To force a new login (ignoring any saved authentication):
+```bash
+python one.py links.txt output.csv --force-login
+```
+
+5. You can combine options:
+```bash
+python one.py links.txt output.csv --debug --force-login
+```
+
 The script will:
 - Attempt to log in to LinkedIn if necessary. On the first successful login, it creates a `linkedin_auth.json` file to try and speed up future logins.
 - Process each URL in the input file.
@@ -58,6 +70,7 @@ The script will:
 - Extract job titles, locations, and descriptions.
 - In debug mode, save HTML content and screenshots to a `debug/` folder for troubleshooting.
 - Save results to the specified CSV file.
+- Gracefully handle situations where the browser is closed by the user during execution
 
 ## Output
 
@@ -74,3 +87,13 @@ When the `--debug` flag is used, the script creates a `debug/` directory with tw
 - `debug/screenshots/`: Contains PNG screenshots of the job pages
 
 Each file is named with a timestamp, job ID (when available), and attempt number to help with troubleshooting. These files can be extremely useful when debugging parsing issues and understanding why certain job details might not be extracted correctly.
+
+## Authentication Management
+
+The script uses a few strategies to handle LinkedIn authentication:
+
+1. Tries to load authentication data from `linkedin_auth.json` if it exists and is valid
+2. Validates saved auth state before using it to ensure it contains essential LinkedIn cookies
+3. If authentication fails or `--force-login` is specified, performs a new login
+4. Saves authentication state after successful login for future use
+5. Properly handles cases when the browser is closed during authentication

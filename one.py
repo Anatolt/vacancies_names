@@ -21,19 +21,63 @@ import argparse
 import hashlib
 import datetime
 from pathlib import Path
-from typing import List, Tuple, Dict
+from typing import List, Tuple, Dict, Optional, Any
 from urllib.parse import urlparse, parse_qs
 
 import pandas as pd
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
-from playwright.async_api import async_playwright, Page
+from playwright.async_api import async_playwright, Page, Browser, BrowserContext, Error
 
 LINKEDIN_LOGIN_URL = "https://www.linkedin.com/login"
 LINKEDIN_PSETTINGS_URL = "https://www.linkedin.com/psettings/"
 TIMEOUT = 60_000  # ms
 STORAGE_STATE_FILE = "linkedin_auth.json"
 DEBUG_DIR = "debug"
+
+# -- Browser state handling functions --
+
+class BrowserClosedError(Exception):
+    """Exception raised when the browser is detected to be closed."""
+    pass
+
+async def is_browser_alive(browser: Browser) -> bool:
+    """Check if the browser is still running and not closed.
+    
+    Args:
+        browser: Playwright browser object
+        
+    Returns:
+        bool: True if browser is still running, False if it was closed
+    """
+    try:
+        # Try to get a simple property from the browser
+        # This will fail if the browser was closed
+        is_connected = await browser.contexts[0].pages[0].evaluate("() => true")
+        return True
+    except (Error, IndexError, KeyError) as e:
+        error_msg = str(e).lower()
+        if "target page, context or browser has been closed" in error_msg or "connection closed" in error_msg:
+            return False
+        # If it's another type of error, the browser might still be alive
+        return True
+
+
+async def check_browser_or_abort(browser: Browser, debug: bool = False) -> None:
+    """Check if browser is alive, raise a clear exception if not.
+    
+    Args:
+        browser: Playwright browser object
+        debug: Whether debug mode is enabled
+        
+    Raises:
+        BrowserClosedError: If browser is detected to be closed
+    """
+    if not await is_browser_alive(browser):
+        error_msg = "Browser has been closed manually. Aborting."
+        if debug:
+            print(f"⚠️ DEBUG: {error_msg}")
+        raise BrowserClosedError(error_msg)
 
 # ─────────────────────────── helpers ───────────────────────────────────────────
 
@@ -197,6 +241,17 @@ async def save_debug_info(page: Page, url: str, html_content: str, debug_enabled
     """Save debug information (HTML and screenshot) for a URL"""
     if not debug_enabled:
         return
+    
+    # Check if browser is still alive before attempting to save debug info
+    try:
+        if page.context.browser:
+            alive = await is_browser_alive(page.context.browser)
+            if not alive:
+                print(f"DEBUG: Browser closed before saving debug info for {url}")
+                return
+    except Exception as e:
+        print(f"DEBUG: Error checking browser state for debug: {e}")
+        return
         
     html_dir, screenshots_dir = setup_debug_dirs()
     filename_base = get_debug_filename(url, attempt)
@@ -216,109 +271,252 @@ async def save_debug_info(page: Page, url: str, html_content: str, debug_enabled
 
 
 async def is_logged_in(page: Page) -> bool:
+    """Check if user is logged in to LinkedIn
+    
+    Args:
+        page: Playwright page object
+        
+    Returns:
+        bool: True if logged in, False otherwise
+    """
     print(f"Checking login status by navigating to {LINKEDIN_PSETTINGS_URL}...")
     try:
-        await page.goto(LINKEDIN_PSETTINGS_URL, timeout=TIMEOUT, wait_until="networkidle")
-    except Exception as e:
-        print(f"Error navigating to {LINKEDIN_PSETTINGS_URL} (networkidle): {str(e)[:150]}. Trying domcontentloaded...")
+        # Check browser alive before navigating
+        if page.context.browser:
+            await check_browser_or_abort(page.context.browser)
+            
         try:
-            await page.goto(LINKEDIN_PSETTINGS_URL, timeout=TIMEOUT, wait_until="domcontentloaded")
-            await page.wait_for_timeout(3000) # Give some time for JS redirects
-        except Exception as e2:
-            print(f"Error navigating to {LINKEDIN_PSETTINGS_URL} (domcontentloaded fallback): {str(e2)[:150]}. Assuming not logged in.")
+            await page.goto(LINKEDIN_PSETTINGS_URL, timeout=TIMEOUT, wait_until="networkidle")
+        except Exception as e:
+            print(f"Error navigating to {LINKEDIN_PSETTINGS_URL} (networkidle): {str(e)[:150]}. Trying domcontentloaded...")
+            
+            # Check browser alive after first nav error
+            if page.context.browser:
+                await check_browser_or_abort(page.context.browser)
+                
+            try:
+                await page.goto(LINKEDIN_PSETTINGS_URL, timeout=TIMEOUT, wait_until="domcontentloaded")
+                await page.wait_for_timeout(3000) # Give some time for JS redirects
+            except Exception as e2:
+                print(f"Error navigating to {LINKEDIN_PSETTINGS_URL} (domcontentloaded fallback): {str(e2)[:150]}. Assuming not logged in.")
+                
+                # Check browser alive after second nav error
+                if page.context.browser:
+                    await check_browser_or_abort(page.context.browser)
+                return False
+
+        current_url = page.url.lower()
+        print(f"Current URL after navigating to psettings: {current_url}")
+
+        if "myaccount/settings" in current_url or "mypreferences/d/categories/account" in current_url:
+            print("✅ Login confirmed (URL indicates settings page).")
+            return True
+        
+        # Check for common login page markers in URL
+        login_url_markers = ["/login", "/uas/login", "/checkpoint/lg/login-submit"]
+        if any(marker in current_url for marker in login_url_markers):
+            print("Login page URL detected. Not logged in.")
             return False
 
-    current_url = page.url.lower()
-    print(f"Current URL after navigating to psettings: {current_url}")
-
-    if "myaccount/settings" in current_url or "mypreferences/d/categories/account" in current_url:
-        print("✅ Login confirmed (URL indicates settings page).")
-        return True
-    
-    # Check for common login page markers in URL
-    login_url_markers = ["/login", "/uas/login", "/checkpoint/lg/login-submit"]
-    if any(marker in current_url for marker in login_url_markers):
-        print("Login page URL detected. Not logged in.")
+        # As a fallback, check for login form elements if URL is still psettings or similar non-confirmed state
+        if LINKEDIN_PSETTINGS_URL.lower() in current_url or "linkedin.com/m/login" in current_url : # linkedin.com/m/login for mobile views
+            login_form_selectors = ["input#username", "form.login__form", "button[type='submit'][aria-label*='Sign in']"]
+            for selector in login_form_selectors:
+                if await page.is_visible(selector):
+                    print(f"Login form element '{selector}' visible on {current_url}. Not logged in.")
+                    return False
+            print(f"URL is {current_url}, but no definitive login form elements found. Checking for logged-in elements as a safeguard.")
+            # Safeguard: if we are on psettings but don't see login form, and also don't see settings page, it's ambiguous.
+            # For safety, assume not logged in unless we positively ID a settings page or a known logged-in element.
+            # Example: Profile picture (though it might not be on psettings redirect before full load)
+            if await page.is_visible("img.global-nav__me-photo"): # Check if profile pic is visible
+                print("Profile picture visible. Assuming logged in.")
+                return True
+            
+            # Additional check for any of these common logged-in elements
+            logged_in_selectors = [
+                "div.feed-identity-module", # Feed identity module
+                "li.global-nav__primary-item", # Nav bar items 
+                "a[href^='/in/']", # Profile link
+                "div[data-control-name='identity_welcome_message']" # Welcome message
+            ]
+            for selector in logged_in_selectors:
+                if await page.is_visible(selector):
+                    print(f"Logged-in element '{selector}' visible. Assuming logged in.")
+                    return True
+        
+        print("Could not definitively confirm login status. Assuming not logged in for safety.")
+        return False
+    except BrowserClosedError:
+        raise  # Re-raise to be caught by caller
+    except Exception as e:
+        print(f"Error checking login status: {str(e)[:150]}. Assuming not logged in.")
         return False
 
-    # As a fallback, check for login form elements if URL is still psettings or similar non-confirmed state
-    if LINKEDIN_PSETTINGS_URL.lower() in current_url or "linkedin.com/m/login" in current_url : # linkedin.com/m/login for mobile views
-        login_form_selectors = ["input#username", "form.login__form", "button[type='submit'][aria-label*='Sign in']"]
-        for selector in login_form_selectors:
-            if await page.is_visible(selector):
-                print(f"Login form element '{selector}' visible on {current_url}. Not logged in.")
-                return False
-        print(f"URL is {current_url}, but no definitive login form elements found. Checking for logged-in elements as a safeguard.")
-        # Safeguard: if we are on psettings but don't see login form, and also don't see settings page, it's ambiguous.
-        # For safety, assume not logged in unless we positively ID a settings page or a known logged-in element.
-        # Example: Profile picture (though it might not be on psettings redirect before full load)
-        if await page.is_visible("img.global-nav__me-photo"): # Check if profile pic is visible
-             print("Profile picture visible. Assuming logged in.")
-             return True
+
+def is_valid_auth_state(state_file: str) -> bool:
+    """Check if the authentication state file is valid and contains cookies.
     
-    print("Could not definitively confirm login status. Assuming not logged in for safety.")
-    return False
+    Args:
+        state_file: Path to the storage state file
+        
+    Returns:
+        bool: True if valid, False otherwise
+    """
+    if not os.path.exists(state_file):
+        return False
+        
+    try:
+        with open(state_file, 'r') as f:
+            state = json.load(f)
+            
+        # Check that we have cookies
+        if not state.get('cookies') or len(state.get('cookies')) == 0:
+            return False
+            
+        # Check for essential LinkedIn cookies
+        linkedin_cookies = [c for c in state.get('cookies', []) 
+                           if c.get('domain', '').endswith('linkedin.com')]
+        
+        # Look for critical cookies that indicate authentication
+        auth_cookies = ['li_at', 'JSESSIONID', 'liap']
+        has_auth_cookies = any(c.get('name') in auth_cookies for c in linkedin_cookies)
+        
+        # Check origins (less important but good to have)
+        has_linkedin_origins = any('linkedin.com' in o.get('origin', '') 
+                                 for o in state.get('origins', []))
+                                 
+        return has_auth_cookies or (len(linkedin_cookies) > 3 and has_linkedin_origins)
+        
+    except (json.JSONDecodeError, KeyError, FileNotFoundError) as e:
+        print(f"Error validating auth state file: {e}")
+        return False
 
 
-async def linkedin_login(page: Page, email: str, password: str) -> None:
+async def linkedin_login(page: Page, email: str, password: str, force_login: bool = False) -> None:
+    """Log in to LinkedIn if not already logged in.
+    
+    Args:
+        page: Playwright page object
+        email: LinkedIn email
+        password: LinkedIn password
+        force_login: Force login even if auth file exists
+        
+    Raises:
+        BrowserClosedError: If browser is closed during login
+    """
     print("Attempting to ensure LinkedIn session is active...")
+    
+    # Check browser alive before trying anything
+    if page.context.browser:
+        await check_browser_or_abort(page.context.browser)
+    
     loaded_from_storage = False
-    if os.path.exists(STORAGE_STATE_FILE):
+    
+    # Skip auth file if force_login is True
+    if not force_login and is_valid_auth_state(STORAGE_STATE_FILE):
         try:
-            with open(STORAGE_STATE_FILE, 'r') as f:
-                storage_content = f.read()
-            if storage_content and storage_content.strip() != '{"cookies": [], "origins": []}':
-                state = json.loads(storage_content)
-                if state.get('cookies') and len(state.get('cookies')) > 0:
-                    print("Attempting to load auth state from file...")
-                    await page.context.storage_state(path=STORAGE_STATE_FILE)
-                    print("Auth state supposedly loaded from file.")
-                    loaded_from_storage = True
-                else:
-                    print(f"Auth file '{STORAGE_STATE_FILE}' found but seems invalid. Will perform new login if needed.")
-            else:
-                print(f"Auth file '{STORAGE_STATE_FILE}' is empty/placeholder. Will perform new login if needed.")
+            print("Attempting to load auth state from file (valid auth file detected)...")
+            await page.context.storage_state(path=STORAGE_STATE_FILE)
+            print("Auth state loaded from file.")
+            loaded_from_storage = True
         except Exception as e:
-            print(f"Could not load/parse auth state from '{STORAGE_STATE_FILE}': {e}. Will perform new login if needed.")
+            print(f"Error loading auth state: {e}. Will perform new login.")
+    elif os.path.exists(STORAGE_STATE_FILE) and not is_valid_auth_state(STORAGE_STATE_FILE):
+        print(f"Auth file '{STORAGE_STATE_FILE}' exists but appears invalid/empty. Will perform new login.")
     else:
-        print(f"Auth file '{STORAGE_STATE_FILE}' not found. Will perform new login if needed.")
+        print(f"Auth file '{STORAGE_STATE_FILE}' not found. Will perform new login.")
+
+    # Check browser alive after loading storage
+    if page.context.browser:
+        await check_browser_or_abort(page.context.browser)
 
     if loaded_from_storage:
-        if await is_logged_in(page):
-            print("✅ Session active (verified after loading from storage).")
-            return
-        else:
-            print("⚠️ Auth state loaded from file, but session appears inactive. Proceeding to manual login.")
-    else: # If not loaded from storage, check if by some miracle we are already logged in
-        if await is_logged_in(page):
-            print("✅ Session active (verified without loading from storage - perhaps browser was already logged in).")
-            # Potentially save this "found" state?
-            # For now, let's not, to keep it simple. If it was important, next run will save it after form login.
-            return
+        try:
+            if await is_logged_in(page):
+                print("✅ Session active (verified after loading from storage).")
+                return
+            else:
+                print("⚠️ Auth state loaded from file, but session appears inactive. Proceeding to manual login.")
+        except BrowserClosedError:
+            raise
+    else: # If not loaded from storage, check if we are already logged in
+        try:
+            if await is_logged_in(page):
+                print("✅ Session active (verified without loading from storage - perhaps browser was already logged in).")
+                # Save this "found" state for future use
+                try:
+                    await page.context.storage_state(path=STORAGE_STATE_FILE)
+                    print(f"✅ Saved detected authentication state to {STORAGE_STATE_FILE}")
+                except Exception as e:
+                    print(f"⚠️ Error saving detected authentication state: {e}")
+                return
+        except BrowserClosedError:
+            raise
+
+    # Check browser alive before form login
+    if page.context.browser:
+        await check_browser_or_abort(page.context.browser)
 
     print("Performing new login via form...")
     try:
         await page.goto(LINKEDIN_LOGIN_URL, timeout=TIMEOUT, wait_until="networkidle")
+        
+        # Check browser alive after navigation
+        if page.context.browser:
+            await check_browser_or_abort(page.context.browser)
+            
+        # Check if we're actually on the login page
+        if not await page.is_visible("input#username") and not await page.is_visible("form.login__form"):
+            print("Login page did not load properly or we're already logged in. Checking login status...")
+            if await is_logged_in(page):
+                print("✅ Appears we're already logged in (login form not visible)")
+                # Save this state
+                try:
+                    await page.context.storage_state(path=STORAGE_STATE_FILE)
+                    print(f"✅ Saved detected authentication state to {STORAGE_STATE_FILE}")
+                except Exception as e:
+                    print(f"⚠️ Error saving detected authentication state: {e}")
+                return
+            else:
+                print("⚠️ Not logged in, but login form not found. This is unusual.")
+                return
+                
         await page.fill("input#username", email)
         await page.fill("input#password", password)
         print("Submitting login form...")
         await page.click("button[type='submit']")
+        
+        # Check browser alive after form submission
+        if page.context.browser:
+            await check_browser_or_abort(page.context.browser)
+            
         # Wait for navigation to a page that indicates login (e.g., psettings redirect or feed)
         # is_logged_in itself navigates, so we can call it directly for verification.
         print("Login form submitted. Verifying login status...")
+    except BrowserClosedError:
+        raise
     except Exception as e:
         print(f"Error during login form submission: {e}. Login may have failed.")
+        # Check if browser closed during this error
+        if page.context.browser:
+            if not await is_browser_alive(page.context.browser):
+                raise BrowserClosedError("Browser closed during login form submission")
         # Even if form submission had an error, is_logged_in might still pass if a redirect happened quickly.
 
-    if await is_logged_in(page):
-        print("Login successful after form submission (verified). Saving authentication state...")
-        try:
-            await page.context.storage_state(path=STORAGE_STATE_FILE)
-            print(f"✅ Saved authentication state to {STORAGE_STATE_FILE}")
-        except Exception as e:
-            print(f"❌ Error saving authentication state: {e}")
-    else:
-        print(f"❌ Login verification failed after form submission. Auth state NOT saved.")
+    # Final verification and save state
+    try:
+        if await is_logged_in(page):
+            print("Login successful after form submission (verified). Saving authentication state...")
+            try:
+                await page.context.storage_state(path=STORAGE_STATE_FILE)
+                print(f"✅ Saved authentication state to {STORAGE_STATE_FILE}")
+            except Exception as e:
+                print(f"❌ Error saving authentication state: {e}")
+        else:
+            print(f"❌ Login verification failed after form submission. Auth state NOT saved.")
+    except BrowserClosedError:
+        raise
 
 
 async def run_scraper(urls: List[str], email: str, password: str, output_csv: str, debug: bool = False):
@@ -329,132 +527,200 @@ async def run_scraper(urls: List[str], email: str, password: str, output_csv: st
         setup_debug_dirs()
         print(f"Debug mode enabled - will save HTML and screenshots to {DEBUG_DIR}/")
     
-    async with async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=False, slow_mo=50)
-        context = await browser.new_context()
-        page = await context.new_page()
-
-        # Initial login check/attempt if any LinkedIn URLs are present
-        # This ensures that if we need to login, we do it once upfront if possible.
-        if any("linkedin.com" in u for u in urls):
-            print("LinkedIn URLs detected in list. Ensuring login status...")
-            await linkedin_login(page, email, password) # This will login if not already logged in
-
-        for raw_url_input in urls:
-            url_to_scrape = to_job_view_url(raw_url_input)
-            print(f"Processing URL: {url_to_scrape} (Original: {raw_url_input})")
-            html_content = None
-            title = None
-            loc = None
-            desc = None
-            is_linkedin_job_url = "linkedin.com" in urlparse(url_to_scrape).netloc and "/jobs/view/" in url_to_scrape
-
-            # --- First attempt to get content ---
-            print(f"Attempt 1: Loading {url_to_scrape}...")
+    try:
+        async with async_playwright() as pw:
             try:
-                await page.goto(url_to_scrape, timeout=TIMEOUT, wait_until="networkidle")
-                html_content = await page.content()
-                
-                # Save debug info for first attempt
-                if debug:
-                    await save_debug_info(page, url_to_scrape, html_content, debug, attempt=1)
-                    
-            except Exception as e1:
-                print(f"Attempt 1: Error with networkidle for {url_to_scrape}: {str(e1)[:150]}. Retrying with 'load'...")
-                try:
-                    await page.goto(url_to_scrape, timeout=TIMEOUT, wait_until="load")
-                    await page.wait_for_timeout(2000) # Allow scripts to run after load
-                    html_content = await page.content()
-                    
-                    # Save debug info for first attempt (load fallback)
-                    if debug:
-                        await save_debug_info(page, url_to_scrape, html_content, debug, attempt=1)
-                        
-                except Exception as e2:
-                    print(f"Attempt 1: Error with 'load' for {url_to_scrape} as well: {str(e2)[:150]}")
-            
-            if html_content:
-                if is_linkedin_job_url:
-                    title, loc, desc = extract_linkedin(html_content)
-                else:
-                    title, loc, desc = extract_generic(html_content)
-                print(f"Attempt 1: Extracted Title: '{title}', Location: '{loc}', Description: '{desc[:50] + '...' if desc else 'None'}'")
+                browser = await pw.chromium.launch(headless=False, slow_mo=50)
+                context = await browser.new_context()
+                page = await context.new_page()
 
-            # --- Second attempt if first failed for LinkedIn URL and login might help ---
-            if is_linkedin_job_url and (not title or not loc or not desc):
-                print(f"Attempt 1 for LinkedIn URL {url_to_scrape} yielded insufficient data (Title: '{title}', Loc: '{loc}', Desc: '{desc is not None}').")
-                print("Ensuring login status again and retrying content extraction...")
-                await linkedin_login(page, email, password) # Ensure we are logged in
-                
-                print(f"Attempt 2: Reloading {url_to_scrape} after login check...")
-                html_content_retry = None
-                try:
-                    await page.goto(url_to_scrape, timeout=TIMEOUT, wait_until="networkidle")
-                    html_content_retry = await page.content()
-                    
-                    # Save debug info for second attempt
-                    if debug:
-                        await save_debug_info(page, url_to_scrape, html_content_retry, debug, attempt=2)
-                        
-                except Exception as e3:
-                    print(f"Attempt 2: Error with networkidle for {url_to_scrape}: {str(e3)[:150]}. Retrying with 'load'...")
+                # Initial login check/attempt if any LinkedIn URLs are present
+                # This ensures that if we need to login, we do it once upfront if possible.
+                if any("linkedin.com" in u for u in urls):
+                    print("LinkedIn URLs detected in list. Ensuring login status...")
                     try:
-                        await page.goto(url_to_scrape, timeout=TIMEOUT, wait_until="load")
-                        await page.wait_for_timeout(2000)
-                        html_content_retry = await page.content()
-                        
-                        # Save debug info for second attempt (load fallback)
+                        await linkedin_login(page, email, password) # This will login if not already logged in
+                    except BrowserClosedError:
+                        print("Browser was closed during login attempt. Aborting.")
+                        return
+                    except Exception as login_error:
+                        print(f"Error during login: {login_error}")
                         if debug:
-                            await save_debug_info(page, url_to_scrape, html_content_retry, debug, attempt=2)
-                            
-                    except Exception as e4:
-                        print(f"Attempt 2: Error with 'load' for {url_to_scrape} as well: {str(e4)[:150]}")
+                            print(f"DEBUG - Full login error: {login_error}")
                 
-                if html_content_retry:
-                    html_content = html_content_retry # Use the new content
-                    title_retry, loc_retry, desc_retry = extract_linkedin(html_content)
-                    print(f"Attempt 2: Extracted Title: '{title_retry}', Location: '{loc_retry}', Description: '{desc_retry[:50] + '...' if desc_retry else 'None'}'")
-                    # Prefer retry results if they are better or original was None
-                    title = title_retry if title_retry is not None else title
-                    loc = loc_retry if loc_retry is not None else loc
-                    desc = desc_retry if desc_retry is not None else desc
-                else:
-                    print(f"Attempt 2: Failed to get content for {url_to_scrape}.")
-            
-            # --- Conservative Interstitial Page Check (on the final html_content) ---
-            if html_content:
-                interstitial_keywords = ["please wait", "verifying", "are you human", "challenge", "too many requests", "before you continue", "verify you're human"]
-                current_page_text_lower = html_content.lower()
-                temp_soup = BeautifulSoup(html_content, "html.parser")
-                linkedin_title_selector = "h1.top-card-layout__title, h1[class*='_title']"
-                has_linkedin_job_title = temp_soup.select_one(linkedin_title_selector) is not None
-                
-                if (any(keyword in current_page_text_lower for keyword in interstitial_keywords) and
-                    len(html_content) < 7000 and 
-                    not has_linkedin_job_title):
-                    print(f"❌ Final content for {url_to_scrape} looks like an interstitial page. Recording as empty.")
-                    html_content = None # This will lead to empty title/loc if not already set
-                    title, loc, desc = None, None, None # Explicitly clear them
-            
-            # --- Save result ---
-            result = {"url": raw_url_input, "title": title, "location": loc, "description": desc}
-            pd.DataFrame([result]).to_csv(output_csv, mode='a', header=False, index=False)
+                for raw_url_input in urls:
+                    try:
+                        # Check if browser is still alive before processing each URL
+                        await check_browser_or_abort(browser, debug)
+                        
+                        url_to_scrape = to_job_view_url(raw_url_input)
+                        print(f"Processing URL: {url_to_scrape} (Original: {raw_url_input})")
+                        html_content = None
+                        title = None
+                        loc = None
+                        desc = None
+                        is_linkedin_job_url = "linkedin.com" in urlparse(url_to_scrape).netloc and "/jobs/view/" in url_to_scrape
 
-            if title or loc or desc:
-                 print(f"✅ Saved: '{title}' at '{loc}' with description length {len(desc) if desc else 0} (Original URL: {raw_url_input})")
-            elif html_content is None and not (title or loc or desc): # Explicitly None from interstitial or load failure
-                 print(f"⚠️ Saved EMPTY result for {raw_url_input} (failed to retrieve valid page content or was interstitial).")
-            else: # Content was parsed, but no title/loc found by extractors
-                 print(f"⚠️ Saved empty title/location/description for {raw_url_input} (content parsed, but no specific data found).")
-        
-        print("Closing browser.")
-        await browser.close()
+                        # --- First attempt to get content ---
+                        print(f"Attempt 1: Loading {url_to_scrape}...")
+                        try:
+                            await page.goto(url_to_scrape, timeout=TIMEOUT, wait_until="networkidle")
+                            html_content = await page.content()
+                            
+                            # Save debug info for first attempt
+                            if debug:
+                                await save_debug_info(page, url_to_scrape, html_content, debug, attempt=1)
+                                
+                        except Exception as e1:
+                            print(f"Attempt 1: Error with networkidle for {url_to_scrape}: {str(e1)[:150]}. Retrying with 'load'...")
+                            
+                            # Check if browser closed after first error
+                            if not await is_browser_alive(browser):
+                                raise BrowserClosedError("Browser closed during page load")
+                                
+                            try:
+                                await page.goto(url_to_scrape, timeout=TIMEOUT, wait_until="load")
+                                await page.wait_for_timeout(2000) # Allow scripts to run after load
+                                html_content = await page.content()
+                                
+                                # Save debug info for first attempt (load fallback)
+                                if debug:
+                                    await save_debug_info(page, url_to_scrape, html_content, debug, attempt=1)
+                                    
+                            except Exception as e2:
+                                print(f"Attempt 1: Error with 'load' for {url_to_scrape} as well: {str(e2)[:150]}")
+                                # Check if browser closed during fallback attempt
+                                if not await is_browser_alive(browser):
+                                    raise BrowserClosedError("Browser closed during fallback page load")
+                        
+                        if html_content:
+                            if is_linkedin_job_url:
+                                title, loc, desc = extract_linkedin(html_content)
+                            else:
+                                title, loc, desc = extract_generic(html_content)
+                            print(f"Attempt 1: Extracted Title: '{title}', Location: '{loc}', Description: '{desc[:50] + '...' if desc else 'None'}'")
+
+                        # --- Second attempt if first failed for LinkedIn URL and login might help ---
+                        if is_linkedin_job_url and (not title or not loc or not desc):
+                            print(f"Attempt 1 for LinkedIn URL {url_to_scrape} yielded insufficient data (Title: '{title}', Loc: '{loc}', Desc: '{desc is not None}').")
+                            print("Ensuring login status again and retrying content extraction...")
+                            
+                            # Check if browser is still alive before login attempt
+                            await check_browser_or_abort(browser, debug)
+                            
+                            try:
+                                await linkedin_login(page, email, password) # Ensure we are logged in
+                            except BrowserClosedError:
+                                raise  # Re-raise to be caught by outer try/except
+                            
+                            # Check if browser is still alive after login
+                            await check_browser_or_abort(browser, debug)
+                            
+                            print(f"Attempt 2: Reloading {url_to_scrape} after login check...")
+                            html_content_retry = None
+                            try:
+                                await page.goto(url_to_scrape, timeout=TIMEOUT, wait_until="networkidle")
+                                html_content_retry = await page.content()
+                                
+                                # Save debug info for second attempt
+                                if debug:
+                                    await save_debug_info(page, url_to_scrape, html_content_retry, debug, attempt=2)
+                                    
+                            except Exception as e3:
+                                print(f"Attempt 2: Error with networkidle for {url_to_scrape}: {str(e3)[:150]}. Retrying with 'load'...")
+                                
+                                # Check if browser closed after retry error
+                                if not await is_browser_alive(browser):
+                                    raise BrowserClosedError("Browser closed during retry load")
+                                    
+                                try:
+                                    await page.goto(url_to_scrape, timeout=TIMEOUT, wait_until="load")
+                                    await page.wait_for_timeout(2000)
+                                    html_content_retry = await page.content()
+                                    
+                                    # Save debug info for second attempt (load fallback)
+                                    if debug:
+                                        await save_debug_info(page, url_to_scrape, html_content_retry, debug, attempt=2)
+                                        
+                                except Exception as e4:
+                                    print(f"Attempt 2: Error with 'load' for {url_to_scrape} as well: {str(e4)[:150]}")
+                                    # Check if browser closed during fallback retry
+                                    if not await is_browser_alive(browser):
+                                        raise BrowserClosedError("Browser closed during fallback retry")
+                            
+                            if html_content_retry:
+                                html_content = html_content_retry # Use the new content
+                                title_retry, loc_retry, desc_retry = extract_linkedin(html_content)
+                                print(f"Attempt 2: Extracted Title: '{title_retry}', Location: '{loc_retry}', Description: '{desc_retry[:50] + '...' if desc_retry else 'None'}'")
+                                # Prefer retry results if they are better or original was None
+                                title = title_retry if title_retry is not None else title
+                                loc = loc_retry if loc_retry is not None else loc
+                                desc = desc_retry if desc_retry is not None else desc
+                            else:
+                                print(f"Attempt 2: Failed to get content for {url_to_scrape}.")
+                        
+                        # --- Conservative Interstitial Page Check (on the final html_content) ---
+                        if html_content:
+                            interstitial_keywords = ["please wait", "verifying", "are you human", "challenge", "too many requests", "before you continue", "verify you're human"]
+                            current_page_text_lower = html_content.lower()
+                            temp_soup = BeautifulSoup(html_content, "html.parser")
+                            linkedin_title_selector = "h1.top-card-layout__title, h1[class*='_title']"
+                            has_linkedin_job_title = temp_soup.select_one(linkedin_title_selector) is not None
+                            
+                            if (any(keyword in current_page_text_lower for keyword in interstitial_keywords) and
+                                len(html_content) < 7000 and 
+                                not has_linkedin_job_title):
+                                print(f"❌ Final content for {url_to_scrape} looks like an interstitial page. Recording as empty.")
+                                html_content = None # This will lead to empty title/loc if not already set
+                                title, loc, desc = None, None, None # Explicitly clear them
+                        
+                        # --- Save result ---
+                        result = {"url": raw_url_input, "title": title, "location": loc, "description": desc}
+                        pd.DataFrame([result]).to_csv(output_csv, mode='a', header=False, index=False)
+
+                        if title or loc or desc:
+                             print(f"✅ Saved: '{title}' at '{loc}' with description length {len(desc) if desc else 0} (Original URL: {raw_url_input})")
+                        elif html_content is None and not (title or loc or desc): # Explicitly None from interstitial or load failure
+                             print(f"⚠️ Saved EMPTY result for {raw_url_input} (failed to retrieve valid page content or was interstitial).")
+                        else: # Content was parsed, but no title/loc found by extractors
+                             print(f"⚠️ Saved empty title/location/description for {raw_url_input} (content parsed, but no specific data found).")
+                    
+                    except BrowserClosedError as bce:
+                        print(f"⚠️ Browser was closed during processing of {raw_url_input}. Aborting.")
+                        if debug:
+                            print(f"DEBUG - Browser closed error details: {bce}")
+                        # Save empty result for the current URL
+                        result = {"url": raw_url_input, "title": None, "location": None, "description": None}
+                        pd.DataFrame([result]).to_csv(output_csv, mode='a', header=False, index=False)
+                        print(f"⚠️ Saved EMPTY result for {raw_url_input} (browser was closed manually).")
+                        # Break the loop - don't process any more URLs
+                        break
+                
+                print("Closing browser.")
+                try:
+                    await browser.close()
+                except Exception as close_error:
+                    if debug:
+                        print(f"DEBUG - Error while closing browser (likely already closed): {close_error}")
+                    
+            except BrowserClosedError:
+                print("⚠️ Browser was closed manually during initialization. Aborting.")
+            except Exception as browser_error:
+                print(f"❌ Error creating or using browser: {browser_error}")
+                if debug:
+                    print(f"DEBUG - Full browser error: {browser_error}")
+    
+    except Exception as global_error:
+        print(f"❌ Global error in run_scraper: {global_error}")
+        if debug:
+            print(f"DEBUG - Full global error: {global_error}")
 
 def main():
     parser = argparse.ArgumentParser(description="LinkedIn job scraper")
     parser.add_argument("links_file", help="Text file with links to scrape")
     parser.add_argument("output_csv", help="Output CSV file")
     parser.add_argument("--debug", action="store_true", help="Enable debug mode (save HTML and screenshots)")
+    parser.add_argument("--force-login", action="store_true", help="Force new login, ignoring saved authentication")
     args = parser.parse_args()
     
     load_dotenv()
@@ -472,8 +738,33 @@ def main():
     if args.debug:
         print("Debug mode enabled - will save HTML and screenshots to debug/")
     
-    asyncio.run(run_scraper(urls_from_file, email, password, args.output_csv, debug=args.debug))
-    print(f"✅ Processing completed. Results saved to {args.output_csv}")
+    if args.force_login:
+        print("Force login enabled - will ignore saved authentication state")
+    
+    # Check auth file validity before running
+    if os.path.exists(STORAGE_STATE_FILE):
+        if is_valid_auth_state(STORAGE_STATE_FILE):
+            print(f"✅ Auth file {STORAGE_STATE_FILE} exists and appears valid.")
+            if args.force_login:
+                print("🔔 Force login is enabled, so saved auth state will be ignored.")
+        else:
+            print(f"⚠️ Auth file {STORAGE_STATE_FILE} exists but appears invalid/empty.")
+            if not args.force_login:
+                print("Will attempt new login.")
+    
+    try:
+        asyncio.run(run_scraper(urls_from_file, email, password, args.output_csv, debug=args.debug))
+        print(f"✅ Processing completed. Results saved to {args.output_csv}")
+    except KeyboardInterrupt:
+        print("\n🛑 Process interrupted by user (Ctrl+C).")
+        print(f"⚠️ Results up to this point have been saved to {args.output_csv}")
+    except Exception as e:
+        print(f"❌ Error during processing: {e}")
+        print(f"⚠️ Partial results may have been saved to {args.output_csv}")
+        if args.debug:
+            import traceback
+            print("Debug traceback:")
+            traceback.print_exc()
 
 
 if __name__ == "__main__":
