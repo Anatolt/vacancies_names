@@ -1,6 +1,11 @@
 - [DONE] make screenshot of every vacancy scrypt visit (to use it in case when parse and llm html understandings failed. try to recognize screenshot with llm) - Реализовано в режиме --debug, сохраняет скриншоты в папку debug/screenshots/
 - [DONE] save all text of the page to try to understand it with llm if it cant be parsed - Реализовано в режиме --debug, сохраняет HTML в папку debug/html/
 - [DONE] fix cookies usage - scrypt save but do not use cookies for some reason - Исправлено: добавлена валидация cookies в linkedin_auth.json и улучшена работа с сохраненным состоянием
+- проверить как работает закрытие браузера посреди процесса
+- проверить как подхватываются куки
 - refactore from on file to separate
 - check start and finish time of each vacancy and whole process
-- discuss with LLM: make it usable from google spreadsheets / chrome extention
+- вести лог скорости работы скрипта при каждом запуске (отправлять в телегу для сохранности?)
+- ВАЖНО: discuss with LLM: make it usable from google spreadsheets / chrome extention
+- добавить куки от гугла и авторизацию через гугл
+- добавить мультипоточность через разные аккаунты и прокси
