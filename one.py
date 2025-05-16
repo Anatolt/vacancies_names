@@ -554,7 +554,8 @@ async def linkedin_login(page: Page, email: str, password: str, force_login: boo
 
 
 async def run_scraper(urls: List[str], email: str, password: str, output_csv: str, debug: bool = False):
-    pd.DataFrame(columns=["url", "title", "location", "description"]).to_csv(output_csv, index=False)
+    # Не создаём заголовок, просто очищаем файл
+    open(output_csv, 'w', encoding='utf-8').close()
     
     if debug:
         # Create debug directories if they don't exist
@@ -716,7 +717,7 @@ async def run_scraper(urls: List[str], email: str, password: str, output_csv: st
                         
                         # --- Save result ---
                         result = {"url": raw_url_input, "title": title, "location": loc, "description": desc}
-                        pd.DataFrame([result]).to_csv(output_csv, mode='a', header=False, index=False)
+                        pd.DataFrame([result]).to_csv(output_csv, mode='a', header=False, index=False, sep='\t')
 
                         if title or loc or desc:
                              print_ts(f"✅ Saved: '{title}' at '{loc}' with description length {len(desc) if desc else 0} (Original URL: {raw_url_input})")
@@ -731,7 +732,7 @@ async def run_scraper(urls: List[str], email: str, password: str, output_csv: st
                             print_ts(f"DEBUG - Browser closed error details: {bce}")
                         # Save empty result for the current URL
                         result = {"url": raw_url_input, "title": None, "location": None, "description": None}
-                        pd.DataFrame([result]).to_csv(output_csv, mode='a', header=False, index=False)
+                        pd.DataFrame([result]).to_csv(output_csv, mode='a', header=False, index=False, sep='\t')
                         print_ts(f"⚠️ Saved EMPTY result for {raw_url_input} (browser was closed manually).")
                         # Break the loop - don't process any more URLs
                         break
