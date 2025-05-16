@@ -420,13 +420,8 @@ async def linkedin_login(page: Page, email: str, password: str, force_login: boo
     
     # Skip auth file if force_login is True
     if not force_login and is_valid_auth_state(STORAGE_STATE_FILE):
-        try:
-            print_ts("Attempting to load auth state from file (valid auth file detected)...")
-            await page.context.storage_state(path=STORAGE_STATE_FILE)
-            print_ts("Auth state loaded from file.")
-            loaded_from_storage = True
-        except Exception as e:
-            print_ts(f"Error loading auth state: {e}. Will perform new login.")
+        print_ts("Auth state файл уже был подхвачен при создании контекста браузера.")
+        loaded_from_storage = True
     elif os.path.exists(STORAGE_STATE_FILE) and not is_valid_auth_state(STORAGE_STATE_FILE):
         print_ts(f"Auth file '{STORAGE_STATE_FILE}' exists but appears invalid/empty. Will perform new login.")
     else:
@@ -570,7 +565,13 @@ async def run_scraper(urls: List[str], email: str, password: str, output_csv: st
         async with async_playwright() as pw:
             try:
                 browser = await pw.chromium.launch(headless=False, slow_mo=50)
-                context = await browser.new_context()
+                # --- Исправление: создаём context с кукисами, если они валидны ---
+                if is_valid_auth_state(STORAGE_STATE_FILE):
+                    context = await browser.new_context(storage_state=STORAGE_STATE_FILE)
+                    print_ts(f"Создаю контекст с сохранёнными кукисами из {STORAGE_STATE_FILE}.")
+                else:
+                    context = await browser.new_context()
+                    print_ts("Создаю новый контекст без кукисов.")
                 page = await context.new_page()
 
                 # Initial login check/attempt if any LinkedIn URLs are present
