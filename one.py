@@ -393,6 +393,11 @@ def is_valid_auth_state(state_file: str) -> bool:
         return False
 
 
+def print_ts(*args, **kwargs):
+    now = datetime.datetime.now().strftime("[%Y-%m-%d %H:%M:%S]")
+    print(now, *args, **kwargs)
+
+
 async def linkedin_login(page: Page, email: str, password: str, force_login: bool = False) -> None:
     """Log in to LinkedIn if not already logged in.
     
@@ -405,7 +410,7 @@ async def linkedin_login(page: Page, email: str, password: str, force_login: boo
     Raises:
         BrowserClosedError: If browser is closed during login
     """
-    print("Attempting to ensure LinkedIn session is active...")
+    print_ts("Attempting to ensure LinkedIn session is active...")
     
     # Check browser alive before trying anything
     if page.context.browser:
@@ -416,16 +421,16 @@ async def linkedin_login(page: Page, email: str, password: str, force_login: boo
     # Skip auth file if force_login is True
     if not force_login and is_valid_auth_state(STORAGE_STATE_FILE):
         try:
-            print("Attempting to load auth state from file (valid auth file detected)...")
+            print_ts("Attempting to load auth state from file (valid auth file detected)...")
             await page.context.storage_state(path=STORAGE_STATE_FILE)
-            print("Auth state loaded from file.")
+            print_ts("Auth state loaded from file.")
             loaded_from_storage = True
         except Exception as e:
-            print(f"Error loading auth state: {e}. Will perform new login.")
+            print_ts(f"Error loading auth state: {e}. Will perform new login.")
     elif os.path.exists(STORAGE_STATE_FILE) and not is_valid_auth_state(STORAGE_STATE_FILE):
-        print(f"Auth file '{STORAGE_STATE_FILE}' exists but appears invalid/empty. Will perform new login.")
+        print_ts(f"Auth file '{STORAGE_STATE_FILE}' exists but appears invalid/empty. Will perform new login.")
     else:
-        print(f"Auth file '{STORAGE_STATE_FILE}' not found. Will perform new login.")
+        print_ts(f"Auth file '{STORAGE_STATE_FILE}' not found. Will perform new login.")
 
     # Check browser alive after loading storage
     if page.context.browser:
@@ -434,22 +439,22 @@ async def linkedin_login(page: Page, email: str, password: str, force_login: boo
     if loaded_from_storage:
         try:
             if await is_logged_in(page):
-                print("✅ Session active (verified after loading from storage).")
+                print_ts("✅ Session active (verified after loading from storage).")
                 return
             else:
-                print("⚠️ Auth state loaded from file, but session appears inactive. Proceeding to manual login.")
+                print_ts("⚠️ Auth state loaded from file, but session appears inactive. Proceeding to manual login.")
         except BrowserClosedError:
             raise
     else: # If not loaded from storage, check if we are already logged in
         try:
             if await is_logged_in(page):
-                print("✅ Session active (verified without loading from storage - perhaps browser was already logged in).")
+                print_ts("✅ Session active (verified without loading from storage - perhaps browser was already logged in).")
                 # Save this "found" state for future use
                 try:
                     await page.context.storage_state(path=STORAGE_STATE_FILE)
-                    print(f"✅ Saved detected authentication state to {STORAGE_STATE_FILE}")
+                    print_ts(f"✅ Saved detected authentication state to {STORAGE_STATE_FILE}")
                 except Exception as e:
-                    print(f"⚠️ Error saving detected authentication state: {e}")
+                    print_ts(f"⚠️ Error saving detected authentication state: {e}")
                 return
         except BrowserClosedError:
             raise
@@ -458,9 +463,10 @@ async def linkedin_login(page: Page, email: str, password: str, force_login: boo
     if page.context.browser:
         await check_browser_or_abort(page.context.browser)
 
-    print("Performing new login via form...")
+    print_ts("Performing new login via form...")
     try:
-        await page.goto(LINKEDIN_LOGIN_URL, timeout=TIMEOUT, wait_until="networkidle")
+        print_ts("Открываю страницу логина с ожиданием 'domcontentloaded' (таймаут 10 сек)...")
+        await page.goto(LINKEDIN_LOGIN_URL, timeout=10000, wait_until="domcontentloaded")
         
         # Check browser alive after navigation
         if page.context.browser:
@@ -468,24 +474,45 @@ async def linkedin_login(page: Page, email: str, password: str, force_login: boo
             
         # Check if we're actually on the login page
         if not await page.is_visible("input#username") and not await page.is_visible("form.login__form"):
-            print("Login page did not load properly or we're already logged in. Checking login status...")
+            print_ts("Login page did not load properly or we're already logged in. Checking login status...")
             if await is_logged_in(page):
-                print("✅ Appears we're already logged in (login form not visible)")
+                print_ts("✅ Appears we're already logged in (login form not visible)")
                 # Save this state
                 try:
                     await page.context.storage_state(path=STORAGE_STATE_FILE)
-                    print(f"✅ Saved detected authentication state to {STORAGE_STATE_FILE}")
+                    print_ts(f"✅ Saved detected authentication state to {STORAGE_STATE_FILE}")
                 except Exception as e:
-                    print(f"⚠️ Error saving detected authentication state: {e}")
+                    print_ts(f"⚠️ Error saving detected authentication state: {e}")
                 return
             else:
-                print("⚠️ Not logged in, but login form not found. This is unusual.")
+                print_ts("⚠️ Not logged in, but login form not found. This is unusual.")
                 return
                 
+        print_ts("Ожидание появления поля username...")
+        await page.wait_for_selector("input#username", state="visible", timeout=10000)
+        print_ts("Ожидание появления поля password...")
+        await page.wait_for_selector("input#password", state="visible", timeout=10000)
+        # Clear fields first
+        await page.fill("input#username", "")
+        await page.fill("input#password", "")
+        # Fill in credentials with a small delay between fields
+        print_ts("Ввожу email...")
         await page.fill("input#username", email)
+        await page.wait_for_timeout(500)
+        print_ts("Ввожу пароль...")
         await page.fill("input#password", password)
-        print("Submitting login form...")
+        print_ts("Ожидание кнопки submit...")
+        await page.wait_for_selector("button[type='submit']", state="visible", timeout=10000)
+        print_ts("Нажимаю submit...")
         await page.click("button[type='submit']")
+        print_ts("Жду появления признака успешного входа (аватарка или меню профиля) в течение 10 секунд...")
+        try:
+            await page.wait_for_selector("img.global-nav__me-photo, .global-nav__me", timeout=10000)
+            print_ts("Обнаружен элемент профиля — вход успешен.")
+        except Exception as e:
+            print_ts(f"Не удалось обнаружить элемент профиля за 10 секунд: {e}")
+        current_url = page.url
+        print_ts(f"Текущий URL после логина: {current_url}")
         
         # Check browser alive after form submission
         if page.context.browser:
@@ -493,11 +520,11 @@ async def linkedin_login(page: Page, email: str, password: str, force_login: boo
             
         # Wait for navigation to a page that indicates login (e.g., psettings redirect or feed)
         # is_logged_in itself navigates, so we can call it directly for verification.
-        print("Login form submitted. Verifying login status...")
+        print_ts("Login form submitted. Verifying login status...")
     except BrowserClosedError:
         raise
     except Exception as e:
-        print(f"Error during login form submission: {e}. Login may have failed.")
+        print_ts(f"Error during login form submission: {e}. Login may have failed.")
         # Check if browser closed during this error
         if page.context.browser:
             if not await is_browser_alive(page.context.browser):
@@ -507,14 +534,26 @@ async def linkedin_login(page: Page, email: str, password: str, force_login: boo
     # Final verification and save state
     try:
         if await is_logged_in(page):
-            print("Login successful after form submission (verified). Saving authentication state...")
+            print_ts("Login successful after form submission (verified). Saving authentication state...")
             try:
                 await page.context.storage_state(path=STORAGE_STATE_FILE)
-                print(f"✅ Saved authentication state to {STORAGE_STATE_FILE}")
+                print_ts(f"✅ Saved authentication state to {STORAGE_STATE_FILE}")
             except Exception as e:
-                print(f"❌ Error saving authentication state: {e}")
+                print_ts(f"❌ Error saving authentication state: {e}")
+            # debug: всегда сохраняем состояние после логина
+            try:
+                await page.context.storage_state(path="linkedin_auth_debug.json")
+                print_ts("[DEBUG] Сохранил состояние куки в linkedin_auth_debug.json после логина.")
+            except Exception as e:
+                print_ts(f"[DEBUG] Не удалось сохранить debug-куки: {e}")
         else:
-            print(f"❌ Login verification failed after form submission. Auth state NOT saved.")
+            print_ts(f"❌ Login verification failed after form submission. Auth state NOT saved.")
+            # debug: сохраняем состояние даже при неудаче
+            try:
+                await page.context.storage_state(path="linkedin_auth_debug.json")
+                print_ts("[DEBUG] Сохранил состояние куки в linkedin_auth_debug.json после НЕУДАЧНОГО логина.")
+            except Exception as e:
+                print_ts(f"[DEBUG] Не удалось сохранить debug-куки: {e}")
     except BrowserClosedError:
         raise
 
@@ -537,7 +576,7 @@ async def run_scraper(urls: List[str], email: str, password: str, output_csv: st
                 # Initial login check/attempt if any LinkedIn URLs are present
                 # This ensures that if we need to login, we do it once upfront if possible.
                 if any("linkedin.com" in u for u in urls):
-                    print("LinkedIn URLs detected in list. Ensuring login status...")
+                    print(f"LinkedIn URLs detected in list. Ensuring login status...")
                     try:
                         await linkedin_login(page, email, password) # This will login if not already logged in
                     except BrowserClosedError:
