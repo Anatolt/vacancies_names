@@ -1,11 +1,21 @@
 - [DONE] make screenshot of every vacancy scrypt visit (to use it in case when parse and llm html understandings failed. try to recognize screenshot with llm) - Реализовано в режиме --debug, сохраняет скриншоты в папку debug/screenshots/
 - [DONE] save all text of the page to try to understand it with llm if it cant be parsed - Реализовано в режиме --debug, сохраняет HTML в папку debug/html/
 - [DONE] fix cookies usage - scrypt save but do not use cookies for some reason - Исправлено: добавлена валидация cookies в linkedin_auth.json и улучшена работа с сохраненным состоянием
-- проверить как работает закрытие браузера посреди процесса
-- проверить как подхватываются куки
-- refactore from on file to separate
-- check start and finish time of each vacancy and whole process
-- вести лог скорости работы скрипта при каждом запуске (отправлять в телегу для сохранности?)
+- [DONE] проверить как работает закрытие браузера посреди процесса - проверил, херово. надо переделывать
+- [DONE] проверить как подхватываются куки - проверил. не работает
+- [DONE] не работает авторизация по кукис. исправить
+- [DONE] переделать вывод, чтоб легче вставлялось в гугл док
+- discuss with LLM: refactore from on file to separate?
+- [DONE] check start and finish time of each vacancy and whole process
+- [DONE] вести лог скорости работы скрипта при каждом запуске 
+- (отправлять лог в телегу для сохранности)
 - ВАЖНО: discuss with LLM: make it usable from google spreadsheets / chrome extention
 - добавить куки от гугла и авторизацию через гугл
 - добавить мультипоточность через разные аккаунты и прокси
+- ВАЖНО: добавить проверку не проверяли ли мы эти вакансии уже (я забываю сохранять файл links.txt) сохранять всё с чем работал скрипт в лог и проходиться по нему?
+- переделать спонтанное закрытие браузера 
+- добавить возможность парсить ваканси не только с линкедина
+- ссылки линкедина типа feed обрабатывать по другому
+- глобальный лог обработанных ссылок и результатов
+- проверка на дубликаты
+- Error with networkable
