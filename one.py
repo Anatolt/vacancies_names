@@ -590,6 +590,31 @@ async def run_scraper(urls: List[str], email: str, password: str, output_csv: st
                             print_ts(f"DEBUG - Full login error: {login_error}")
                 
                 for raw_url_input in urls:
+                    # --- Новая логика: обработка пустых строк и не-LinkedIn ссылок ---
+                    if not raw_url_input.strip():
+                        result = {"url": raw_url_input, "title": None, "location": None, "description": None}
+                        pd.DataFrame([result]).to_csv(output_csv, mode='a', header=False, index=False, sep='\t')
+                        print_ts(f"⚠️ Пустая строка в ссылках — добавлено пустое значение в CSV.")
+                        continue
+                    if "linkedin.com" not in raw_url_input:
+                        result = {"url": raw_url_input, "title": None, "location": None, "description": None}
+                        pd.DataFrame([result]).to_csv(output_csv, mode='a', header=False, index=False, sep='\t')
+                        print_ts(f"⚠️ Не LinkedIn-ссылка: {raw_url_input} — добавлено пустое значение в CSV.")
+                        continue
+                    # Теперь обрабатываем только linkedin.com с /jobs, остальные LinkedIn-ссылки пропускаем
+                    if "linkedin.com" in raw_url_input and "/jobs" not in raw_url_input:
+                        result = {"url": raw_url_input, "title": None, "location": None, "description": None}
+                        pd.DataFrame([result]).to_csv(output_csv, mode='a', header=False, index=False, sep='\t')
+                        print_ts(f"⚠️ LinkedIn-ссылка без /jobs: {raw_url_input} — добавлено пустое значение в CSV.")
+                        continue
+                    # Исключения для linkedin.com/feed/, /posts/, /post/
+                    if ("linkedin.com" in raw_url_input and
+                        ("/feed/" in raw_url_input or "/posts/" in raw_url_input or "/post/" in raw_url_input)):
+                        result = {"url": raw_url_input, "title": None, "location": None, "description": None}
+                        pd.DataFrame([result]).to_csv(output_csv, mode='a', header=False, index=False, sep='\t')
+                        print_ts(f"⚠️ LinkedIn feed/post ссылка: {raw_url_input} — добавлено пустое значение в CSV.")
+                        continue
+                    # --- конец новой логики ---
                     try:
                         # Check if browser is still alive before processing each URL
                         await check_browser_or_abort(browser, debug)
@@ -772,7 +797,7 @@ def main():
         sys.exit(1)
 
     with open(args.links_file, encoding="utf-8") as f:
-        urls_from_file = [l.strip() for l in f if l.strip()]
+        urls_from_file = [l.rstrip('\n\r') for l in f]
 
     print_ts(f"Loaded {len(urls_from_file)} URLs…")
     
