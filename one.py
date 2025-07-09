@@ -28,6 +28,7 @@ import pandas as pd
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright, Page, Browser, BrowserContext, Error
+import requests
 
 LINKEDIN_LOGIN_URL = "https://www.linkedin.com/login"
 LINKEDIN_PSETTINGS_URL = "https://www.linkedin.com/psettings/"
@@ -553,9 +554,38 @@ async def linkedin_login(page: Page, email: str, password: str, force_login: boo
         raise
 
 
-async def run_scraper(urls: List[str], email: str, password: str, output_csv: str, debug: bool = False):
+def send_telegram_message(token: str, user_id: str, text: str) -> bool:
+    """Send a message to a Telegram user via Bot API."""
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = {
+        "chat_id": user_id,
+        "text": text,
+        "parse_mode": "HTML"
+    }
+    try:
+        resp = requests.post(url, data=payload, timeout=10)
+        if resp.status_code == 200:
+            return True
+        else:
+            print_ts(f"Telegram API error: {resp.status_code} {resp.text}")
+            return False
+    except Exception as e:
+        print_ts(f"Telegram send error: {e}")
+        return False
+
+
+async def run_scraper(urls: List[str], email: str, password: str, output_csv: str, debug: bool = False, history_path: str = "history.txt"):
     # Не создаём заголовок, просто очищаем файл
     open(output_csv, 'w', encoding='utf-8').close()
+
+    # --- История ---
+    history_set = set()
+    if os.path.exists(history_path):
+        with open(history_path, encoding="utf-8") as hf:
+            history_set = set(line.strip() for line in hf if line.strip())
+    processed_count = 0
+    skipped_count = 0
+    new_history = []
     
     if debug:
         # Create debug directories if they don't exist
@@ -583,42 +613,47 @@ async def run_scraper(urls: List[str], email: str, password: str, output_csv: st
                         await linkedin_login(page, email, password) # This will login if not already logged in
                     except BrowserClosedError:
                         print_ts("Browser was closed during login attempt. Aborting.")
-                        return
+                        return processed_count, skipped_count
                     except Exception as login_error:
                         print_ts(f"Error during login: {login_error}")
                         if debug:
                             print_ts(f"DEBUG - Full login error: {login_error}")
                 
                 for raw_url_input in urls:
+                    # --- История: пропускать, если уже есть ---
+                    if raw_url_input.strip() in history_set:
+                        skipped_count += 1
+                        continue
                     # --- Новая логика: обработка пустых строк и не-LinkedIn ссылок ---
                     if not raw_url_input.strip():
                         result = {"url": raw_url_input, "title": None, "location": None, "description": None}
                         pd.DataFrame([result]).to_csv(output_csv, mode='a', header=False, index=False, sep='\t')
                         print_ts(f"⚠️ Пустая строка в ссылках — добавлено пустое значение в CSV.")
+                        skipped_count += 1
                         continue
                     if "linkedin.com" not in raw_url_input:
                         result = {"url": raw_url_input, "title": None, "location": None, "description": None}
                         pd.DataFrame([result]).to_csv(output_csv, mode='a', header=False, index=False, sep='\t')
                         print_ts(f"⚠️ Не LinkedIn-ссылка: {raw_url_input} — добавлено пустое значение в CSV.")
+                        skipped_count += 1
                         continue
-                    # Теперь обрабатываем только linkedin.com с /jobs, остальные LinkedIn-ссылки пропускаем
                     if "linkedin.com" in raw_url_input and "/jobs" not in raw_url_input:
                         result = {"url": raw_url_input, "title": None, "location": None, "description": None}
                         pd.DataFrame([result]).to_csv(output_csv, mode='a', header=False, index=False, sep='\t')
                         print_ts(f"⚠️ LinkedIn-ссылка без /jobs: {raw_url_input} — добавлено пустое значение в CSV.")
+                        skipped_count += 1
                         continue
-                    # Исключения для linkedin.com/feed/, /posts/, /post/
                     if ("linkedin.com" in raw_url_input and
                         ("/feed/" in raw_url_input or "/posts/" in raw_url_input or "/post/" in raw_url_input)):
                         result = {"url": raw_url_input, "title": None, "location": None, "description": None}
                         pd.DataFrame([result]).to_csv(output_csv, mode='a', header=False, index=False, sep='\t')
                         print_ts(f"⚠️ LinkedIn feed/post ссылка: {raw_url_input} — добавлено пустое значение в CSV.")
+                        skipped_count += 1
                         continue
                     # --- конец новой логики ---
                     try:
                         # Check if browser is still alive before processing each URL
                         await check_browser_or_abort(browser, debug)
-                        
                         url_to_scrape = to_job_view_url(raw_url_input)
                         print_ts(f"Processing URL: {url_to_scrape} (Original: {raw_url_input})")
                         html_content = None
@@ -626,94 +661,74 @@ async def run_scraper(urls: List[str], email: str, password: str, output_csv: st
                         loc = None
                         desc = None
                         is_linkedin_job_url = "linkedin.com" in urlparse(url_to_scrape).netloc and "/jobs/view/" in url_to_scrape
-
                         # --- First attempt to get content ---
                         print_ts(f"Attempt 1: Loading {url_to_scrape}...")
                         try:
                             await page.goto(url_to_scrape, timeout=TIMEOUT, wait_until="networkidle")
                             html_content = await page.content()
-                            
                             # Save debug info for first attempt
                             if debug:
                                 await save_debug_info(page, url_to_scrape, html_content, debug, attempt=1)
-                                
                         except Exception as e1:
                             print_ts(f"Attempt 1: Error with networkidle for {url_to_scrape}: {str(e1)[:150]}. Retrying with 'load'...")
-                            
                             # Check if browser closed after first error
                             if not await is_browser_alive(browser):
                                 raise BrowserClosedError("Browser closed during page load")
-                                
                             try:
                                 await page.goto(url_to_scrape, timeout=TIMEOUT, wait_until="load")
                                 await page.wait_for_timeout(2000) # Allow scripts to run after load
                                 html_content = await page.content()
-                                
                                 # Save debug info for first attempt (load fallback)
                                 if debug:
                                     await save_debug_info(page, url_to_scrape, html_content, debug, attempt=1)
-                                    
                             except Exception as e2:
                                 print_ts(f"Attempt 1: Error with 'load' for {url_to_scrape} as well: {str(e2)[:150]}")
                                 # Check if browser closed during fallback attempt
                                 if not await is_browser_alive(browser):
                                     raise BrowserClosedError("Browser closed during fallback page load")
-                        
                         if html_content:
                             if is_linkedin_job_url:
                                 title, loc, desc = extract_linkedin(html_content)
                             else:
                                 title, loc, desc = extract_generic(html_content)
                             print_ts(f"Attempt 1: Extracted Title: '{title}', Location: '{loc}', Description: '{desc[:50] + '...' if desc else 'None'}'")
-
                         # --- Second attempt if first failed for LinkedIn URL and login might help ---
                         if is_linkedin_job_url and (not title or not loc or not desc):
                             print_ts(f"Attempt 1 for LinkedIn URL {url_to_scrape} yielded insufficient data (Title: '{title}', Loc: '{loc}', Desc: '{desc is not None}').")
                             print_ts("Ensuring login status again and retrying content extraction...")
-                            
                             # Check if browser is still alive before login attempt
                             await check_browser_or_abort(browser, debug)
-                            
                             try:
                                 await linkedin_login(page, email, password) # Ensure we are logged in
                             except BrowserClosedError:
                                 raise  # Re-raise to be caught by outer try/except
-                            
                             # Check if browser is still alive after login
                             await check_browser_or_abort(browser, debug)
-                            
                             print_ts(f"Attempt 2: Reloading {url_to_scrape} after login check...")
                             html_content_retry = None
                             try:
                                 await page.goto(url_to_scrape, timeout=TIMEOUT, wait_until="networkidle")
                                 html_content_retry = await page.content()
-                                
                                 # Save debug info for second attempt
                                 if debug:
                                     await save_debug_info(page, url_to_scrape, html_content_retry, debug, attempt=2)
-                                    
                             except Exception as e3:
                                 print_ts(f"Attempt 2: Error with networkidle for {url_to_scrape}: {str(e3)[:150]}. Retrying with 'load'...")
-                                
                                 # Check if browser closed after retry error
                                 if not await is_browser_alive(browser):
                                     raise BrowserClosedError("Browser closed during retry load")
-                                    
                                 try:
                                     await page.goto(url_to_scrape, timeout=TIMEOUT, wait_until="load")
                                     await page.wait_for_timeout(2000)
                                     html_content_retry = await page.content()
-                                    
                                     # Save debug info for second attempt (load fallback)
                                     if debug:
                                         await save_debug_info(page, url_to_scrape, html_content_retry, debug, attempt=2)
-                                        
                                 except Exception as e4:
                                     print_ts(f"Attempt 2: Error with 'load' for {url_to_scrape} as well: {str(e4)[:150]}")
                                     # Check if browser closed during fallback retry
                                     if not await is_browser_alive(browser):
                                         raise BrowserClosedError("Browser closed during fallback retry")
-                            
                             if html_content_retry:
                                 html_content = html_content_retry # Use the new content
                                 title_retry, loc_retry, desc_retry = extract_linkedin(html_content)
@@ -724,7 +739,6 @@ async def run_scraper(urls: List[str], email: str, password: str, output_csv: st
                                 desc = desc_retry if desc_retry is not None else desc
                             else:
                                 print_ts(f"Attempt 2: Failed to get content for {url_to_scrape}.")
-                        
                         # --- Conservative Interstitial Page Check (on the final html_content) ---
                         if html_content:
                             interstitial_keywords = ["please wait", "verifying", "are you human", "challenge", "too many requests", "before you continue", "verify you're human"]
@@ -732,25 +746,27 @@ async def run_scraper(urls: List[str], email: str, password: str, output_csv: st
                             temp_soup = BeautifulSoup(html_content, "html.parser")
                             linkedin_title_selector = "h1.top-card-layout__title, h1[class*='_title']"
                             has_linkedin_job_title = temp_soup.select_one(linkedin_title_selector) is not None
-                            
                             if (any(keyword in current_page_text_lower for keyword in interstitial_keywords) and
                                 len(html_content) < 7000 and 
                                 not has_linkedin_job_title):
                                 print_ts(f"❌ Final content for {url_to_scrape} looks like an interstitial page. Recording as empty.")
                                 html_content = None # This will lead to empty title/loc if not already set
                                 title, loc, desc = None, None, None # Explicitly clear them
-                        
                         # --- Save result ---
                         result = {"url": raw_url_input, "title": title, "location": loc, "description": desc}
                         pd.DataFrame([result]).to_csv(output_csv, mode='a', header=False, index=False, sep='\t')
-
                         if title or loc or desc:
                              print_ts(f"✅ Saved: '{title}' at '{loc}' with description length {len(desc) if desc else 0} (Original URL: {raw_url_input})")
+                             processed_count += 1
+                             new_history.append(raw_url_input.strip())
                         elif html_content is None and not (title or loc or desc): # Explicitly None from interstitial or load failure
                              print_ts(f"⚠️ Saved EMPTY result for {raw_url_input} (failed to retrieve valid page content or was interstitial).")
+                             processed_count += 1
+                             new_history.append(raw_url_input.strip())
                         else: # Content was parsed, but no title/loc found by extractors
                              print_ts(f"⚠️ Saved empty title/location/description for {raw_url_input} (content parsed, but no specific data found).")
-                    
+                             processed_count += 1
+                             new_history.append(raw_url_input.strip())
                     except BrowserClosedError as bce:
                         print_ts(f"⚠️ Browser was closed during processing of {raw_url_input}. Aborting.")
                         if debug:
@@ -761,25 +777,29 @@ async def run_scraper(urls: List[str], email: str, password: str, output_csv: st
                         print_ts(f"⚠️ Saved EMPTY result for {raw_url_input} (browser was closed manually).")
                         # Break the loop - don't process any more URLs
                         break
-                
+                # --- Сохраняем новые обработанные ссылки в history.txt ---
+                if new_history:
+                    with open(history_path, "a", encoding="utf-8") as hf:
+                        for url in new_history:
+                            hf.write(url + "\n")
                 print_ts("Closing browser.")
                 try:
                     await browser.close()
                 except Exception as close_error:
                     if debug:
                         print_ts(f"DEBUG - Error while closing browser (likely already closed): {close_error}")
-                    
             except BrowserClosedError:
                 print_ts("⚠️ Browser was closed manually during initialization. Aborting.")
             except Exception as browser_error:
                 print_ts(f"❌ Error creating or using browser: {browser_error}")
                 if debug:
                     print_ts(f"DEBUG - Full browser error: {browser_error}")
-    
     except Exception as global_error:
         print_ts(f"❌ Global error in run_scraper: {global_error}")
         if debug:
             print_ts(f"DEBUG - Full global error: {global_error}")
+    return processed_count, skipped_count
+
 
 def main():
     parser = argparse.ArgumentParser(description="LinkedIn job scraper")
@@ -792,8 +812,10 @@ def main():
     load_dotenv()
     email = os.getenv("LINKEDIN_EMAIL")
     password = os.getenv("LINKEDIN_PASSWORD")
-    if not email or not password:
-        print_ts("Set LINKEDIN_EMAIL / LINKEDIN_PASSWORD first!")
+    telegram_token = os.getenv("TELEGRAM_TOKEN")
+    telegram_userid = os.getenv("TELEGRAM_USERID")
+    if not email or not password or not telegram_token or not telegram_userid:
+        print_ts("Set LINKEDIN_EMAIL / LINKEDIN_PASSWORD / TELEGRAM_TOKEN / TELEGRAM_USERID in .env!")
         sys.exit(1)
 
     with open(args.links_file, encoding="utf-8") as f:
@@ -817,13 +839,37 @@ def main():
             print_ts(f"⚠️ Auth file {STORAGE_STATE_FILE} exists but appears invalid/empty.")
             if not args.force_login:
                 print_ts("Will attempt new login.")
+
+    # Засекаем время старта
+    start_dt = datetime.datetime.now()
+    start_str = start_dt.strftime('%H:%M:%S')
+    send_telegram_message(telegram_token, telegram_userid, f"Скрипт стартовал в {start_str}, всего ссылок: {len(urls_from_file)}")
     
     try:
-        asyncio.run(run_scraper(urls_from_file, email, password, args.output_csv, debug=args.debug))
+        processed_count, skipped_count = asyncio.run(run_scraper(urls_from_file, email, password, args.output_csv, debug=args.debug))
         print_ts(f"✅ Processing completed. Results saved to {args.output_csv}")
+        print_ts(f"Processed: {processed_count}, Skipped: {skipped_count}")
+        end_dt = datetime.datetime.now()
+        end_str = end_dt.strftime('%H:%M:%S')
+        duration = end_dt - start_dt
+        minutes, seconds = divmod(duration.total_seconds(), 60)
+        duration_str = f"{int(minutes)} мин {int(seconds)} сек"
+        send_telegram_message(
+            telegram_token, telegram_userid,
+            f"Скрипт завершён в {end_str}, обработано: {processed_count}, пропущено: {skipped_count}, заняло: {duration_str}"
+        )
     except KeyboardInterrupt:
         print_ts("\n🛑 Process interrupted by user (Ctrl+C).")
         print_ts(f"⚠️ Results up to this point have been saved to {args.output_csv}")
+        end_dt = datetime.datetime.now()
+        end_str = end_dt.strftime('%H:%M:%S')
+        duration = end_dt - start_dt
+        minutes, seconds = divmod(duration.total_seconds(), 60)
+        duration_str = f"{int(minutes)} мин {int(seconds)} сек"
+        send_telegram_message(
+            telegram_token, telegram_userid,
+            f"Скрипт прерван в {end_str}, обработано: неизвестно, пропущено: неизвестно, заняло: {duration_str}"
+        )
     except Exception as e:
         print_ts(f"❌ Error during processing: {e}")
         print_ts(f"⚠️ Partial results may have been saved to {args.output_csv}")
@@ -831,6 +877,15 @@ def main():
             import traceback
             print_ts("Debug traceback:")
             traceback.print_exc()
+        end_dt = datetime.datetime.now()
+        end_str = end_dt.strftime('%H:%M:%S')
+        duration = end_dt - start_dt
+        minutes, seconds = divmod(duration.total_seconds(), 60)
+        duration_str = f"{int(minutes)} мин {int(seconds)} сек"
+        send_telegram_message(
+            telegram_token, telegram_userid,
+            f"Скрипт завершён с ошибкой в {end_str}, заняло: {duration_str}"
+        )
 
 
 if __name__ == "__main__":
