@@ -1,3 +1,20 @@
+todo 2025-07-08
+- разделить файл one на части
+    Анализ от LLM:
+    Рекомендую сделать так:
+    main.py — основной управляющий скрипт, который:
+    запускает браузер
+    вызывает нужную команду:
+    а) собрать ссылки откликов
+    б) обработать ссылки из файла
+    extract_applied_links.py — модуль для сбора ссылок с откликов (ходит по страницам, сохраняет в txt)
+    one.py — оставить только обработку ссылок из файла (или переименовать в process_links.py)
+    utils.py — общие функции (логин, запуск браузера, и т.д.)
+- натравить эту шутку, на вакансии на которые уже откликнулись в линкедине (вот ссылка https://www.linkedin.com/my-items/saved-jobs/?cardType=APPLIED)
+    - чтоб выкачивала и заполняла гугл таблицу / csv (что проще)
+    - чтоб считала количество
+    - чтоб проверяла соответствуют ли резюмешке и требованиям (клиент хочет не бекенд, а андроид) через llm
+
 - [DONE] make screenshot of every vacancy scrypt visit (to use it in case when parse and llm html understandings failed. try to recognize screenshot with llm) - Реализовано в режиме --debug, сохраняет скриншоты в папку debug/screenshots/
 - [DONE] save all text of the page to try to understand it with llm if it cant be parsed - Реализовано в режиме --debug, сохраняет HTML в папку debug/html/
 - [DONE] fix cookies usage - scrypt save but do not use cookies for some reason - Исправлено: добавлена валидация cookies в linkedin_auth.json и улучшена работа с сохраненным состоянием
