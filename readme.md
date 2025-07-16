@@ -6,8 +6,10 @@ A modular Python application that scrapes job titles, locations, and description
 
 - **Modular Architecture**: Clean separation of concerns with dedicated modules for parsing, authentication, and utilities
 - **Multi-site Support**: Extracts job information from LinkedIn and other job posting sites
+- **Applied Jobs Collection**: Automatically collect all job links from LinkedIn "My Jobs" (Applied) page with pagination support
 - **Smart Authentication**: Handles LinkedIn login with session persistence via `linkedin_auth.json`
 - **Comprehensive History**: Stores complete job data (URL, title, location, description, timestamp) in JSON format to avoid duplicates and enable analysis
+- **Progress Saving**: Continuous saving of collected links with resume functionality
 - **Debug Mode**: Saves HTML content and screenshots for troubleshooting
 - **Telegram Notifications**: Optional completion notifications via Telegram bot
 - **Robust Error Handling**: Graceful handling of browser closure and network issues
@@ -40,28 +42,48 @@ Then edit `.env` with your actual credentials.
 ## Project Structure
 
 ```
-├── main.py                 # Main entry point
-├── src/                    # Source code modules
-│   ├── process_links.py    # Core link processing logic
-│   ├── linkedin_auth.py    # LinkedIn authentication module
-│   ├── utils.py           # Utility functions (browser, debug, telegram)
-│   └── parsers/           # Parser modules
+├── main.py                    # Main entry point for scraping job details
+├── collect_applied_jobs.py    # Collect all Applied Jobs links with pagination
+├── applied_check.py          # Debug tool for Applied Jobs page analysis
+├── src/                      # Source code modules
+│   ├── process_links.py      # Core link processing logic
+│   ├── linkedin_auth.py      # LinkedIn authentication module
+│   ├── applied_jobs_parser.py # Applied Jobs page parser with pagination
+│   ├── utils.py             # Utility functions (browser, debug, telegram)
+│   └── parsers/             # Parser modules
 │       ├── __init__.py
-│       ├── linkedin.py    # LinkedIn job parser
-│       └── generic.py     # Generic job site parser
-├── data/                   # Data files and outputs
-│   ├── links.txt          # Input URLs
-│   ├── results.csv        # Output results
-│   ├── history.txt        # Processed URLs history
-│   └── linkedin_auth.json # LinkedIn session data
-├── debug/                  # Debug outputs (created when --debug used)
-│   ├── html/              # Saved HTML files
-│   └── screenshots/       # Page screenshots
-├── .env                   # Environment variables (create from env.example)
-└── requirements.txt       # Python dependencies
+│       ├── linkedin.py      # LinkedIn job parser
+│       └── generic.py       # Generic job site parser
+├── data/                     # Data files and outputs
+│   ├── links.txt            # Input URLs
+│   ├── results.csv          # Output results
+│   ├── history.txt          # Processed URLs history
+│   └── linkedin_auth.json   # LinkedIn session data
+├── debug/                    # Debug outputs (created when --debug used)
+│   ├── html/                # Saved HTML files
+│   ├── screenshots/         # Page screenshots
+│   └── applied/             # Applied Jobs debug files
+├── .env                     # Environment variables (create from env.example)
+└── requirements.txt         # Python dependencies
 ```
 
 ## Usage
+
+### Method 1: Collect Applied Jobs Automatically
+
+The easiest way to scrape all jobs you've applied to on LinkedIn:
+
+1. **Collect all Applied Jobs links:**
+```bash
+python collect_applied_jobs.py
+```
+
+2. **Scrape job details from collected links:**
+```bash
+python main.py --links-file data/applied_jobs_links_YYYYMMDD_HHMMSS.txt --output data/applied_jobs_results.csv --debug
+```
+
+### Method 2: Manual Links File
 
 1. Create a text file (e.g., `links.txt`) containing job URLs, one per line:
 ```
@@ -81,10 +103,17 @@ python main.py --links-file my_links.txt --output results.csv --debug
 
 ### Command Line Options
 
+#### main.py (Job Details Scraper)
 - `--links-file`: Input file with URLs (default: `data/links.txt`)
 - `--output`: Output CSV file (default: `data/results.csv`)
 - `--debug`: Enable debug mode (saves HTML and screenshots)
 - `--history`: History file to track processed URLs (default: `data/history.txt`)
+
+#### collect_applied_jobs.py (Applied Jobs Collector)
+- `--output`: Output file for job links (default: auto-generated with timestamp)
+- `--resume`: Resume from existing file (useful if collection was interrupted)
+- `--max-pages`: Maximum pages to process (default: 50)
+- `--headless`: Run browser in headless mode
 
 The script will:
 - Attempt to log in to LinkedIn if necessary. On the first successful login, it creates a `linkedin_auth.json` file to try and speed up future logins.
@@ -143,6 +172,44 @@ python history_manager.py stats
 
 # Migrate old plain-text history to new JSON format
 python history_manager.py migrate data/old_history.txt
+```
+
+## Applied Jobs Collection Examples
+
+### Basic Collection
+```bash
+# Collect all applied jobs links
+python collect_applied_jobs.py
+
+# Output: data/applied_jobs_links_20250716_164500.txt
+```
+
+### Advanced Collection Options
+```bash
+# Limit to first 10 pages
+python collect_applied_jobs.py --max-pages 10
+
+# Save to specific file
+python collect_applied_jobs.py --output my_applied_jobs.txt
+
+# Run in headless mode (no browser window)
+python collect_applied_jobs.py --headless
+
+# Resume interrupted collection
+python collect_applied_jobs.py --resume data/applied_jobs_links_20250716_164500.txt
+```
+
+### Complete Workflow Example
+```bash
+# Step 1: Collect all applied jobs links
+python collect_applied_jobs.py --output data/my_applied_jobs.txt
+
+# Step 2: Scrape detailed information
+python main.py --links-file data/my_applied_jobs.txt --output data/applied_jobs_details.csv --debug
+
+# Step 3: View history and statistics
+python history_manager.py stats
+python history_manager.py search "android"
 ```
 
 ## Authentication Management
