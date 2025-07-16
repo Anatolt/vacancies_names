@@ -1,16 +1,17 @@
-# LinkedIn Job Scraper
+# Job Scraper
 
-A Python script that scrapes job titles, locations, and descriptions from LinkedIn and other job posting URLs.
+A modular Python application that scrapes job titles, locations, and descriptions from LinkedIn and other job posting URLs.
 
 ## Features
 
-- Extracts job titles, locations, and descriptions from LinkedIn job postings
-- Supports both LinkedIn and generic job posting URLs
-- Handles LinkedIn authentication and attempts to reuse sessions using `linkedin_auth.json`
-- Exports results to CSV format
-- Debug mode to save HTML content and screenshots for troubleshooting
-- Graceful handling of browser closure by user
-- Improved session authentication and validation
+- **Modular Architecture**: Clean separation of concerns with dedicated modules for parsing, authentication, and utilities
+- **Multi-site Support**: Extracts job information from LinkedIn and other job posting sites
+- **Smart Authentication**: Handles LinkedIn login with session persistence via `linkedin_auth.json`
+- **History Tracking**: Avoids processing duplicate URLs using history file
+- **Debug Mode**: Saves HTML content and screenshots for troubleshooting
+- **Telegram Notifications**: Optional completion notifications via Telegram bot
+- **Robust Error Handling**: Graceful handling of browser closure and network issues
+- **CSV Export**: Clean tabular output with job titles, locations, and descriptions
 
 ## Prerequisites
 
@@ -29,10 +30,35 @@ pip install -r requirements.txt
 playwright install chromium
 ```
 
-3. Create a `.env` file in the project root with your LinkedIn credentials:
+3. Create a `.env` file in the project root with your credentials:
+```bash
+cp env.example .env
 ```
-LINKEDIN_EMAIL=your_email@example.com
-LINKEDIN_PASSWORD=your_password
+
+Then edit `.env` with your actual credentials.
+
+## Project Structure
+
+```
+├── main.py                 # Main entry point
+├── src/                    # Source code modules
+│   ├── process_links.py    # Core link processing logic
+│   ├── linkedin_auth.py    # LinkedIn authentication module
+│   ├── utils.py           # Utility functions (browser, debug, telegram)
+│   └── parsers/           # Parser modules
+│       ├── __init__.py
+│       ├── linkedin.py    # LinkedIn job parser
+│       └── generic.py     # Generic job site parser
+├── data/                   # Data files and outputs
+│   ├── links.txt          # Input URLs
+│   ├── results.csv        # Output results
+│   ├── history.txt        # Processed URLs history
+│   └── linkedin_auth.json # LinkedIn session data
+├── debug/                  # Debug outputs (created when --debug used)
+│   ├── html/              # Saved HTML files
+│   └── screenshots/       # Page screenshots
+├── .env                   # Environment variables (create from env.example)
+└── requirements.txt       # Python dependencies
 ```
 
 ## Usage
@@ -43,25 +69,22 @@ https://www.linkedin.com/jobs/view/123456789/
 https://www.linkedin.com/jobs/view/987654321/
 ```
 
-2. Run the script:
+2. Run the scraper:
 ```bash
-python one.py links.txt output.csv
+python main.py
 ```
 
-3. For debugging issues with extraction, use the debug flag:
+3. With custom options:
 ```bash
-python one.py links.txt output.csv --debug
+python main.py --links-file my_links.txt --output results.csv --debug
 ```
 
-4. To force a new login (ignoring any saved authentication):
-```bash
-python one.py links.txt output.csv --force-login
-```
+### Command Line Options
 
-5. You can combine options:
-```bash
-python one.py links.txt output.csv --debug --force-login
-```
+- `--links-file`: Input file with URLs (default: `data/links.txt`)
+- `--output`: Output CSV file (default: `data/results.csv`)
+- `--debug`: Enable debug mode (saves HTML and screenshots)
+- `--history`: History file to track processed URLs (default: `data/history.txt`)
 
 The script will:
 - Attempt to log in to LinkedIn if necessary. On the first successful login, it creates a `linkedin_auth.json` file to try and speed up future logins.
