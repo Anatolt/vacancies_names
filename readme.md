@@ -7,7 +7,7 @@ A modular Python application that scrapes job titles, locations, and description
 - **Modular Architecture**: Clean separation of concerns with dedicated modules for parsing, authentication, and utilities
 - **Multi-site Support**: Extracts job information from LinkedIn and other job posting sites
 - **Smart Authentication**: Handles LinkedIn login with session persistence via `linkedin_auth.json`
-- **History Tracking**: Avoids processing duplicate URLs using history file
+- **Comprehensive History**: Stores complete job data (URL, title, location, description, timestamp) in JSON format to avoid duplicates and enable analysis
 - **Debug Mode**: Saves HTML content and screenshots for troubleshooting
 - **Telegram Notifications**: Optional completion notifications via Telegram bot
 - **Robust Error Handling**: Graceful handling of browser closure and network issues
@@ -110,6 +110,40 @@ When the `--debug` flag is used, the script creates a `debug/` directory with tw
 - `debug/screenshots/`: Contains PNG screenshots of the job pages
 
 Each file is named with a timestamp, job ID (when available), and attempt number to help with troubleshooting. These files can be extremely useful when debugging parsing issues and understanding why certain job details might not be extracted correctly.
+
+## History Management
+
+The scraper now maintains comprehensive history in JSON format, storing complete job data rather than just URLs. This enables:
+
+- **Duplicate Prevention**: Automatically skips previously processed URLs
+- **Data Analysis**: Full job information available for analysis
+- **Progress Tracking**: Timestamps for all processed jobs
+- **Search Capabilities**: Find jobs by title, location, or description
+
+### History File Format
+
+The history file (`data/history.txt`) stores one JSON object per line:
+```json
+{"url": "https://linkedin.com/jobs/view/123", "title": "Android Developer", "location": "Berlin, Germany", "description": "Job description...", "processed_at": "2025-01-16T10:30:00"}
+```
+
+### History Management Commands
+
+Use the `history_manager.py` utility to interact with your history:
+
+```bash
+# View recent entries
+python history_manager.py view --limit 20
+
+# Search for specific jobs
+python history_manager.py search "android developer"
+
+# Show statistics
+python history_manager.py stats
+
+# Migrate old plain-text history to new JSON format
+python history_manager.py migrate data/old_history.txt
+```
 
 ## Authentication Management
 

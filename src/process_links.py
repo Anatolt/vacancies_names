@@ -4,7 +4,9 @@ Main link processing module.
 
 import os
 import asyncio
-from typing import List, Tuple
+import json
+from datetime import datetime
+from typing import List, Tuple, Dict, Any
 from dotenv import load_dotenv
 import pandas as pd
 from playwright.async_api import async_playwright
@@ -16,6 +18,64 @@ from src.utils import (
 )
 from src.linkedin_auth import linkedin_login
 from src.parsers import extract_linkedin, extract_generic
+
+
+def load_history(history_path: str) -> Dict[str, Dict[str, Any]]:
+    """
+    Load comprehensive history from JSON file.
+    
+    Returns:
+        Dict mapping URLs to their full job data
+    """
+    if not os.path.exists(history_path):
+        return {}
+    
+    history = {}
+    try:
+        with open(history_path, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                
+                # Try to parse as JSON (new format)
+                try:
+                    data = json.loads(line)
+                    if isinstance(data, dict) and 'url' in data:
+                        history[data['url']] = data
+                except json.JSONDecodeError:
+                    # Fallback for old format (plain URLs)
+                    history[line] = {'url': line, 'title': None, 'location': None, 'description': None}
+        
+        print_ts(f"Loaded {len(history)} entries from history")
+        return history
+        
+    except Exception as e:
+        print_ts(f"Error loading history: {e}")
+        return {}
+
+
+def save_history_entry(history_path: str, job_data: Dict[str, Any]) -> None:
+    """
+    Save a single job entry to history file in JSON format.
+    
+    Args:
+        history_path: Path to history file
+        job_data: Dictionary containing job information
+    """
+    try:
+        # Ensure directory exists
+        os.makedirs(os.path.dirname(history_path), exist_ok=True)
+        
+        # Add timestamp
+        job_data['processed_at'] = datetime.now().isoformat()
+        
+        # Append to history file as JSON line
+        with open(history_path, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(job_data, ensure_ascii=False) + '\n')
+            
+    except Exception as e:
+        print_ts(f"Error saving to history: {e}")
 
 
 async def run_scraper(urls: List[str], email: str, password: str, output_csv: str, debug: bool = False, history_path: str = "data/history.txt") -> Tuple[int, int]:
@@ -39,15 +99,12 @@ async def run_scraper(urls: List[str], email: str, password: str, output_csv: st
     # Clear output file
     open(output_csv, 'w', encoding='utf-8').close()
 
-    # Load history
-    history_set = set()
-    if os.path.exists(history_path):
-        with open(history_path, encoding="utf-8") as hf:
-            history_set = set(line.strip() for line in hf if line.strip())
+    # Load comprehensive history
+    history_data = load_history(history_path)
+    history_urls = set(history_data.keys())
     
     processed_count = 0
     skipped_count = 0
-    new_history = []
     
     if debug:
         setup_debug_dirs()
@@ -83,8 +140,9 @@ async def run_scraper(urls: List[str], email: str, password: str, output_csv: st
                 
                 for raw_url_input in urls:
                     # Skip if already in history
-                    if raw_url_input.strip() in history_set:
+                    if raw_url_input.strip() in history_urls:
                         skipped_count += 1
+                        print_ts(f"⏭️ Skipping (already processed): {raw_url_input.strip()}")
                         continue
                     
                     # Handle empty lines
@@ -150,7 +208,9 @@ async def run_scraper(urls: List[str], email: str, password: str, output_csv: st
                         }
                         
                         pd.DataFrame([result]).to_csv(output_csv, mode='a', header=False, index=False, sep='\t')
-                        new_history.append(raw_url_input.strip())
+                        
+                        # Save to comprehensive history
+                        save_history_entry(history_path, result.copy())
                         processed_count += 1
                         
                         print_ts(f"✅ Processed: {title or 'No title'} | {location or 'No location'}")
@@ -163,7 +223,9 @@ async def run_scraper(urls: List[str], email: str, password: str, output_csv: st
                         # Save empty result for failed URLs
                         result = {"url": url, "title": None, "location": None, "description": None}
                         pd.DataFrame([result]).to_csv(output_csv, mode='a', header=False, index=False, sep='\t')
-                        new_history.append(raw_url_input.strip())
+                        
+                        # Save to comprehensive history even for failed URLs
+                        save_history_entry(history_path, result.copy())
                         processed_count += 1
 
                 await browser.close()
@@ -174,13 +236,7 @@ async def run_scraper(urls: List[str], email: str, password: str, output_csv: st
     except Exception as e:
         print_ts(f"Playwright error: {e}")
     
-    # Update history file
-    if new_history:
-        # Ensure history directory exists
-        os.makedirs(os.path.dirname(history_path), exist_ok=True)
-        with open(history_path, 'a', encoding='utf-8') as hf:
-            for url in new_history:
-                hf.write(f"{url}\n")
+    # History is now saved incrementally during processing
     
     return processed_count, skipped_count
 
