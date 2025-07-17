@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Generate Icons</title>
+    <style>
+        body { 
+            font-family: Arial, sans-serif; 
+            padding: 20px; 
+            background: #f0f0f0; 
+        }
+        .icon-container { 
+            display: inline-block; 
+            margin: 10px; 
+            text-align: center; 
+            background: white; 
+            padding: 10px; 
+            border-radius: 8px; 
+        }
+        canvas { 
+            border: 1px solid #ccc; 
+            display: block; 
+            margin: 0 auto; 
+        }
+        .download-btn { 
+            margin-top: 10px; 
+            padding: 8px 16px; 
+            background: #0a66c2; 
+            color: white; 
+            border: none; 
+            border-radius: 4px; 
+            cursor: pointer; 
+        }
+        .download-btn:hover { 
+            background: #084482; 
+        }
+    </style>
+</head>
+<body>
+    <h1>LinkedIn Applied Jobs Collector - Icon Generator</h1>
+    <p>Правый клик на иконке → "Сохранить изображение как..." для сохранения PNG</p>
+    
+    <div class="icon-container">
+        <canvas id="icon16" width="16" height="16"></canvas>
+        <div>16x16</div>
+        <button class="download-btn" onclick="downloadIcon('icon16', 'icon16.png')">Скачать</button>
+    </div>
+    
+    <div class="icon-container">
+        <canvas id="icon48" width="48" height="48"></canvas>
+        <div>48x48</div>
+        <button class="download-btn" onclick="downloadIcon('icon48', 'icon48.png')">Скачать</button>
+    </div>
+    
+    <div class="icon-container">
+        <canvas id="icon128" width="128" height="128"></canvas>
+        <div>128x128</div>
+        <button class="download-btn" onclick="downloadIcon('icon128', 'icon128.png')">Скачать</button>
+    </div>
+
+    <script>
+        // SVG content
+        const svgContent = `
+        <svg width="128" height="128" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+                <linearGradient id="grad1" x1="0%" y1="0%" x2="100%" y2="100%">
+                    <stop offset="0%" style="stop-color:#0a66c2;stop-opacity:1" />
+                    <stop offset="100%" style="stop-color:#084482;stop-opacity:1" />
+                </linearGradient>
+            </defs>
+            
+            <circle cx="64" cy="64" r="60" fill="url(#grad1)" stroke="#ffffff" stroke-width="4"/>
+            
+            <rect x="32" y="24" width="64" height="80" rx="4" fill="#ffffff" opacity="0.9"/>
+            
+            <rect x="40" y="36" width="48" height="3" rx="1.5" fill="#0a66c2"/>
+            <rect x="40" y="44" width="40" height="3" rx="1.5" fill="#0a66c2"/>
+            <rect x="40" y="52" width="44" height="3" rx="1.5" fill="#0a66c2"/>
+            <rect x="40" y="60" width="36" height="3" rx="1.5" fill="#0a66c2"/>
+            <rect x="40" y="68" width="42" height="3" rx="1.5" fill="#0a66c2"/>
+            <rect x="40" y="76" width="38" height="3" rx="1.5" fill="#0a66c2"/>
+            
+            <path d="M 48 88 L 56 96 L 80 72" stroke="#0a66c2" stroke-width="4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+            
+            <circle cx="88" cy="40" r="3" fill="#ffffff"/>
+            <circle cx="88" cy="48" r="3" fill="#ffffff"/>
+            <circle cx="88" cy="56" r="3" fill="#ffffff"/>
+        </svg>`;
+
+        function drawIcon(canvasId, size) {
+            const canvas = document.getElementById(canvasId);
+            const ctx = canvas.getContext('2d');
+            
+            // Create image from SVG
+            const img = new Image();
+            const svgBlob = new Blob([svgContent], {type: 'image/svg+xml'});
+            const url = URL.createObjectURL(svgBlob);
+            
+            img.onload = function() {
+                // Clear canvas
+                ctx.clearRect(0, 0, size, size);
+                
+                // Draw image scaled to canvas size
+                ctx.drawImage(img, 0, 0, size, size);
+                
+                URL.revokeObjectURL(url);
+            };
+            
+            img.src = url;
+        }
+
+        function downloadIcon(canvasId, filename) {
+            const canvas = document.getElementById(canvasId);
+            const link = document.createElement('a');
+            link.download = filename;
+            link.href = canvas.toDataURL();
+            link.click();
+        }
+
+        // Draw all icons
+        drawIcon('icon16', 16);
+        drawIcon('icon48', 48);
+        drawIcon('icon128', 128);
+    </script>
+</body>
+</html> 

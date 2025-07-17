@@ -2,11 +2,25 @@
 
 A modular Python application that scrapes job titles, locations, and descriptions from LinkedIn and other job posting URLs.
 
+## 🆕 Chrome Extension Available!
+
+**Новинка!** Теперь доступно Chrome расширение для сбора ссылок на Applied Jobs прямо из браузера:
+
+- ✅ **Простая установка** - работает в вашем обычном Chrome
+- ✅ **Без авторизации** - использует вашу существующую сессию LinkedIn
+- ✅ **Автоматический сбор** - проходит по всем страницам Applied Jobs
+- ✅ **Скачивание результатов** - сохраняет ссылки в текстовый файл
+
+**[📥 Установить расширение](extension/INSTALL.md)** | **[📖 Документация расширения](extension/README.md)**
+
+---
+
 ## Features
 
 - **Modular Architecture**: Clean separation of concerns with dedicated modules for parsing, authentication, and utilities
 - **Multi-site Support**: Extracts job information from LinkedIn and other job posting sites
 - **Applied Jobs Collection**: Automatically collect all job links from LinkedIn "My Jobs" (Applied) page with pagination support
+- **Chrome Extension**: Browser extension for easy Applied Jobs link collection
 - **Smart Authentication**: Handles LinkedIn login with session persistence via `linkedin_auth.json`
 - **Comprehensive History**: Stores complete job data (URL, title, location, description, timestamp) in JSON format to avoid duplicates and enable analysis
 - **Progress Saving**: Continuous saving of collected links with resume functionality
@@ -45,6 +59,15 @@ Then edit `.env` with your actual credentials.
 ├── main.py                    # Main entry point for scraping job details
 ├── collect_applied_jobs.py    # Collect all Applied Jobs links with pagination
 ├── applied_check.py          # Debug tool for Applied Jobs page analysis
+├── extension/                 # 🆕 Chrome Extension
+│   ├── manifest.json         # Extension configuration
+│   ├── popup.html            # Extension interface
+│   ├── popup.js             # Popup logic
+│   ├── content.js           # Main parsing script
+│   ├── background.js        # Background script
+│   ├── icons/               # Extension icons
+│   ├── README.md            # Extension documentation
+│   └── INSTALL.md           # Installation guide
 ├── src/                      # Source code modules
 │   ├── process_links.py      # Core link processing logic
 │   ├── linkedin_auth.py      # LinkedIn authentication module
@@ -69,9 +92,22 @@ Then edit `.env` with your actual credentials.
 
 ## Usage
 
-### Method 1: Collect Applied Jobs Automatically
+### Method 1: Chrome Extension (Recommended)
 
-The easiest way to scrape all jobs you've applied to on LinkedIn:
+**Самый простой способ** - используйте Chrome расширение:
+
+1. **[Установите расширение](extension/INSTALL.md)**
+2. Откройте страницу Applied Jobs в LinkedIn
+3. Нажмите на иконку расширения и запустите сбор
+4. Скачайте файл со ссылками
+5. Используйте Python скрипт для парсинга деталей:
+```bash
+python main.py --links-file downloaded_links.txt --output results.csv
+```
+
+### Method 2: Python Script (Collect Applied Jobs Automatically)
+
+Классический способ с использованием Python скрипта:
 
 1. **Collect all Applied Jobs links:**
 ```bash
