@@ -1,0 +1,38 @@
+{
+  "manifest_version": 3,
+  "name": "LinkedIn Applied Jobs Collector",
+  "version": "1.0.3",
+  "description": "Собирает ссылки на все вакансии, на которые вы откликнулись в LinkedIn",
+  "permissions": [
+    "activeTab",
+    "storage",
+    "downloads",
+    "contextMenus"
+  ],
+  "host_permissions": [
+    "https://www.linkedin.com/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "LinkedIn Applied Jobs Collector"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.linkedin.com/my-items/saved-jobs/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_end"
+    }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
