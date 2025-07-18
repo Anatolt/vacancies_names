@@ -27,6 +27,8 @@ links.txt
 linkedin_auth.json
 *.json
 *.csv
+# Исключения для расширения Chrome
+!new-extension/manifest.json
 playwright-report/
 test-results/
 .pytest_cache/
